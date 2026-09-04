@@ -10,7 +10,7 @@ describe("GraphShield investigation shell", () => {
   it("enters the seeded investigation with a resilient backend fallback", async () => {
     const user = userEvent.setup();
     render(<GraphShieldApp />);
-    await user.click(screen.getByRole("button", { name: /explore the seeded case/i }));
+    await user.click(screen.getByRole("button", { name: /open sample investigation/i }));
     expect(await screen.findByRole("heading", { name: /choose your evidence/i })).toBeInTheDocument();
     expect(screen.getByText(/resilient demo/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /use this evidence/i })).toBeEnabled();

@@ -8,7 +8,7 @@ test("production bundle contains the GraphShield experience", async () => {
   const files = await readdir(new URL("../dist/client/assets/", import.meta.url));
   assert.ok(files.some(name => name.startsWith("GraphShieldApp-") && name.endsWith(".js")));
   const source = await readFile(new URL("../app/GraphShieldApp.tsx", import.meta.url), "utf8");
-  assert.match(source, /Find the signal/);
+  assert.match(source, /See the network behind suspicious activity/);
   assert.match(source, /Durable workspace/);
   assert.match(source, /profileUpload/);
   assert.doesNotMatch(source, /Your site is taking shape|react-loading-skeleton/i);
