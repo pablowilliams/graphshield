@@ -1,0 +1,9 @@
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY services ./services
+RUN CGO_ENABLED=0 go build -o /graphshield-api ./services/api
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /graphshield-api /graphshield-api
+EXPOSE 8080
+ENTRYPOINT ["/graphshield-api"]

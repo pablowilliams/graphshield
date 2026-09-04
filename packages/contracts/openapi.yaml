@@ -1,0 +1,115 @@
+openapi: 3.1.0
+info:
+  title: GraphShield API
+  version: 0.1.0
+  description: Versioned API for reproducible graph investigations.
+servers:
+  - url: http://localhost:8080/api/v1
+paths:
+  /projects:
+    post:
+      summary: Create a draft investigation
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProject' }
+      responses:
+        '201': { description: Created }
+        '422': { $ref: '#/components/responses/Problem' }
+  /projects/{projectId}/preview:
+    get:
+      summary: Return a deterministic sampled graph
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { description: Preview generated }
+  /projects/{projectId}/mapping:
+    put:
+      summary: Validate and save an immutable mapping version
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { description: Valid mapping and diagnostics }
+  /projects/{projectId}/runs:
+    post:
+      summary: Submit an idempotent asynchronous analysis
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRun' }
+      responses:
+        '202': { description: Accepted }
+        '400': { $ref: '#/components/responses/Problem' }
+  /runs/{runId}:
+    get:
+      summary: Get current run state
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '200': { description: Run status }
+  /runs/{runId}/events:
+    get:
+      summary: Read ordered progress events as SSE
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '200': { description: text/event-stream }
+  /runs/{runId}/cancel:
+    post:
+      summary: Request cooperative cancellation
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '202': { description: Cancellation requested }
+  /runs/{runId}/retry:
+    post:
+      summary: Create a new run from prior immutable configuration
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '202': { description: Retry accepted }
+  /runs/{runId}/results:
+    get:
+      summary: Get canonical result rows
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '200': { description: Result page }
+  /runs/{runId}/export:
+    get:
+      summary: Download formula-safe CSV results
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '200': { description: CSV artifact }
+components:
+  parameters:
+    ProjectId: { name: projectId, in: path, required: true, schema: { type: string } }
+    RunId: { name: runId, in: path, required: true, schema: { type: string } }
+  schemas:
+    CreateProject:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties: { name: { type: string, minLength: 1, maxLength: 120 } }
+    CreateRun:
+      type: object
+      required: [analysis]
+      additionalProperties: false
+      properties:
+        analysis: { type: string, enum: [WCC, PAGERANK, SHORTEST_PATH] }
+    Problem:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+  responses:
+    Problem:
+      description: RFC 7807-style problem
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }

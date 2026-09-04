@@ -1,0 +1,17 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports: ["3000:3000"]
+    environment:
+      GRAPHSHIELD_API_URL: http://api:8080
+    depends_on: [api]
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports: ["8080:8080"]
+    environment:
+      GRAPHSHIELD_API_ADDR: :8080
+      GRAPHSHIELD_WEB_ORIGIN: http://localhost:3000
