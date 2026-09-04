@@ -6,15 +6,20 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pablograph/graphshield/services/graph"
+	storepkg "github.com/pablograph/graphshield/services/store"
 )
 
 type Project struct {
@@ -46,6 +51,7 @@ type API struct {
 	runs        map[string]*Run
 	idempotency map[string]string
 	logger      *slog.Logger
+	persistent  *storepkg.Postgres
 }
 
 func newAPI() *API {
@@ -59,8 +65,19 @@ func id(prefix string) string {
 
 func main() {
 	a := newAPI()
+	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
+		repo, err := storepkg.Open(context.Background(), databaseURL)
+		if err != nil {
+			a.logger.Error("api.database", "error", err)
+			os.Exit(1)
+		}
+		a.persistent = repo
+		defer repo.Close()
+		a.logger.Info("api.persistence", "mode", "postgres")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.health)
+	mux.HandleFunc("GET /metrics", a.metrics)
 	mux.HandleFunc("POST /api/v1/projects", a.createProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/preview", a.preview)
 	mux.HandleFunc("PUT /api/v1/projects/{id}/mapping", a.mapping)
@@ -72,7 +89,7 @@ func main() {
 	mux.HandleFunc("GET /api/v1/runs/{id}/results", a.getResults)
 	mux.HandleFunc("GET /api/v1/runs/{id}/export", a.export)
 	mux.HandleFunc("GET /api/v1/support/runs", a.supportRuns)
-	h := requestMiddleware(cors(mux))
+	h := requestMiddleware(security(rateLimit(cors(mux))))
 	addr := env("GRAPHSHIELD_API_ADDR", ":8080")
 	a.logger.Info("api.ready", "addr", addr)
 	if err := http.ListenAndServe(addr, h); err != nil {
@@ -90,7 +107,8 @@ func env(k, v string) string {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", env("GRAPHSHIELD_WEB_ORIGIN", "http://localhost:3000"))
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-GraphShield-User, X-GraphShield-Role, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return
@@ -100,12 +118,57 @@ func cors(next http.Handler) http.Handler {
 }
 func requestMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestsTotal.Add(1)
 		requestID := r.Header.Get("X-Request-ID")
 		if requestID == "" {
 			requestID = id("req_")
 		}
 		w.Header().Set("X-Request-ID", requestID)
 		w.Header().Set("Content-Type", "application/json")
+		next.ServeHTTP(w, r)
+	})
+}
+
+var requestsTotal atomic.Uint64
+
+func security(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+type visitor struct {
+	count  int
+	window time.Time
+}
+
+var rateMu sync.Mutex
+var visitors = map[netip.Addr]visitor{}
+
+func rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, _ := strings.Cut(r.RemoteAddr, ":")
+		ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
+		if err == nil {
+			rateMu.Lock()
+			v := visitors[ip]
+			now := time.Now()
+			if now.Sub(v.window) >= time.Minute {
+				v = visitor{window: now}
+			}
+			v.count++
+			visitors[ip] = v
+			rateMu.Unlock()
+			if v.count > 120 {
+				w.Header().Set("Retry-After", "60")
+				problem(w, 429, "RATE_LIMITED", "Too many requests", "This client exceeded 120 requests per minute.")
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -117,12 +180,27 @@ func problem(w http.ResponseWriter, status int, code, title, detail string) {
 	write(w, status, map[string]any{"type": "https://graphshield.dev/problems/" + strings.ToLower(strings.ReplaceAll(code, "_", "-")), "title": title, "status": status, "detail": detail, "errors": []any{map[string]string{"code": code, "action": "Review the supplied configuration and try again."}}})
 }
 func decode(r *http.Request, v any) error {
-	d := json.NewDecoder(r.Body)
+	d := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if err := d.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("request body must contain one JSON object")
+	}
+	return nil
 }
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
-	write(w, 200, map[string]any{"status": "ok", "version": "0.1.0", "time": time.Now().UTC()})
+	mode := "memory"
+	if a.persistent != nil {
+		mode = "postgres"
+	}
+	write(w, 200, map[string]any{"status": "ok", "version": "0.2.0", "persistence": mode, "time": time.Now().UTC()})
+}
+func (a *API) metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(200)
+	fmt.Fprintf(w, "# HELP graphshield_http_requests_total Total HTTP requests.\n# TYPE graphshield_http_requests_total counter\ngraphshield_http_requests_total %d\n", requestsTotal.Load())
 }
 func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -136,10 +214,16 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.projects[p.ID] = p
 	a.mu.Unlock()
+	if a.persistent != nil {
+		if err := a.persistent.CreateProject(r.Context(), p.ID, ownerID(r), p.Name, p.SourceVersion); err != nil {
+			problem(w, 500, "PROJECT_PERSIST_FAILED", "Project could not be persisted", "The database rejected the new project.")
+			return
+		}
+	}
 	write(w, 201, p)
 }
 func (a *API) mapping(w http.ResponseWriter, r *http.Request) {
-	if !a.hasProject(r.PathValue("id")) {
+	if !a.authorizedProject(r, r.PathValue("id")) {
 		problem(w, 404, "PROJECT_NOT_FOUND", "Project not found", "The requested project does not exist.")
 		return
 	}
@@ -151,7 +235,7 @@ func (a *API) mapping(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"id": id("map_"), "version": 1, "valid": true, "diagnostics": []any{map[string]any{"code": "ORPHAN_ENDPOINT", "severity": "warning", "count": 43, "action": "Review unmatched device identifiers."}}})
 }
 func (a *API) preview(w http.ResponseWriter, r *http.Request) {
-	if !a.hasProject(r.PathValue("id")) {
+	if !a.authorizedProject(r, r.PathValue("id")) {
 		problem(w, 404, "PROJECT_NOT_FOUND", "Project not found", "The requested project does not exist.")
 		return
 	}
@@ -163,10 +247,17 @@ func (a *API) hasProject(projectID string) bool {
 	_, ok := a.projects[projectID]
 	return ok
 }
+func (a *API) authorizedProject(r *http.Request, projectID string) bool {
+	if a.persistent != nil {
+		ok, err := a.persistent.ProjectExists(r.Context(), projectID, ownerID(r))
+		return err == nil && ok
+	}
+	return a.hasProject(projectID)
+}
 
 func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
-	if !a.hasProject(projectID) {
+	if !a.authorizedProject(r, projectID) {
 		problem(w, 404, "PROJECT_NOT_FOUND", "Project not found", "The requested project does not exist.")
 		return
 	}
@@ -184,6 +275,15 @@ func (a *API) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Analysis != "WCC" && in.Analysis != "PAGERANK" && in.Analysis != "SHORTEST_PATH" {
 		problem(w, 422, "UNSUPPORTED_ANALYSIS", "Choose a supported analysis", "Use WCC, PAGERANK, or SHORTEST_PATH.")
+		return
+	}
+	if a.persistent != nil {
+		run, err := a.persistent.Enqueue(r.Context(), id("run_"), projectID, ownerID(r), in.Analysis, key, map[string]any{"source": "A-1047", "target": "A-7314"})
+		if err != nil {
+			problem(w, 500, "RUN_QUEUE_FAILED", "Run could not be queued", "The durable queue is unavailable.")
+			return
+		}
+		write(w, 202, map[string]any{"id": run.ID, "status": run.Status, "statusUrl": "/api/v1/runs/" + run.ID})
 		return
 	}
 	a.mu.Lock()
@@ -242,6 +342,15 @@ func (a *API) run(id string) (*Run, bool) {
 	return x, ok
 }
 func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
+	if a.persistent != nil {
+		run, err := a.persistent.GetRun(r.Context(), r.PathValue("id"), ownerID(r))
+		if err != nil {
+			problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
+			return
+		}
+		write(w, 200, run)
+		return
+	}
 	run, ok := a.run(r.PathValue("id"))
 	if !ok {
 		problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
@@ -250,6 +359,19 @@ func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, run)
 }
 func (a *API) events(w http.ResponseWriter, r *http.Request) {
+	if a.persistent != nil {
+		events, err := a.persistent.Events(r.Context(), r.PathValue("id"), ownerID(r))
+		if err != nil {
+			problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range events {
+			b, _ := json.Marshal(event)
+			fmt.Fprintf(w, "id: %d\nevent: progress\ndata: %s\n\n", event.Sequence, b)
+		}
+		return
+	}
 	run, ok := a.run(r.PathValue("id"))
 	if !ok {
 		problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
@@ -262,6 +384,14 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {
+	if a.persistent != nil {
+		if err := a.persistent.CancelRun(r.Context(), r.PathValue("id"), ownerID(r)); err != nil {
+			problem(w, 409, "RUN_NOT_CANCELLABLE", "Run cannot be cancelled", "It may already be terminal.")
+			return
+		}
+		write(w, 202, map[string]string{"id": r.PathValue("id"), "status": "CANCELLED"})
+		return
+	}
 	run, ok := a.run(r.PathValue("id"))
 	if !ok {
 		problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
@@ -276,6 +406,25 @@ func (a *API) cancelRun(w http.ResponseWriter, r *http.Request) {
 	write(w, 202, map[string]string{"id": run.ID, "status": "CANCELLING"})
 }
 func (a *API) retryRun(w http.ResponseWriter, r *http.Request) {
+	if a.persistent != nil {
+		old, err := a.persistent.GetRun(r.Context(), r.PathValue("id"), ownerID(r))
+		if err != nil {
+			problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
+			return
+		}
+		key := r.Header.Get("Idempotency-Key")
+		if key == "" {
+			problem(w, 400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency key required", "Provide a unique Idempotency-Key header.")
+			return
+		}
+		run, err := a.persistent.Enqueue(r.Context(), id("run_"), old.ProjectID, ownerID(r), old.Algorithm, key, map[string]any{"retryOf": old.ID})
+		if err != nil {
+			problem(w, 500, "RUN_QUEUE_FAILED", "Retry could not be queued", "The durable queue is unavailable.")
+			return
+		}
+		write(w, 202, map[string]any{"id": run.ID, "retryOf": old.ID, "status": run.Status})
+		return
+	}
 	old, ok := a.run(r.PathValue("id"))
 	if !ok {
 		problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
@@ -296,6 +445,15 @@ func (a *API) retryRun(w http.ResponseWriter, r *http.Request) {
 	write(w, 202, map[string]any{"id": run.ID, "retryOf": old.ID, "status": run.Status})
 }
 func (a *API) getResults(w http.ResponseWriter, r *http.Request) {
+	if a.persistent != nil {
+		run, err := a.persistent.GetRun(r.Context(), r.PathValue("id"), ownerID(r))
+		if err != nil || run.Status != "SUCCEEDED" {
+			problem(w, 409, "RESULT_NOT_READY", "Results are not ready", "Wait for the run to succeed.")
+			return
+		}
+		write(w, 200, map[string]any{"items": run.Result, "nextCursor": nil})
+		return
+	}
 	run, ok := a.run(r.PathValue("id"))
 	if !ok {
 		problem(w, 404, "RUN_NOT_FOUND", "Run not found", "The requested run does not exist.")
@@ -335,6 +493,15 @@ func (a *API) supportRuns(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "OPERATOR_REQUIRED", "Operator access required", "Ask an administrator for the operator role.")
 		return
 	}
+	if a.persistent != nil {
+		runs, err := a.persistent.ListRuns(r.Context(), ownerID(r), true)
+		if err != nil {
+			problem(w, 500, "RUN_SEARCH_FAILED", "Runs could not be searched", "The database query failed.")
+			return
+		}
+		write(w, 200, map[string]any{"items": runs, "count": len(runs)})
+		return
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	items := make([]*Run, 0, len(a.runs))
@@ -342,4 +509,15 @@ func (a *API) supportRuns(w http.ResponseWriter, r *http.Request) {
 		items = append(items, run)
 	}
 	write(w, 200, map[string]any{"items": items, "count": len(items)})
+}
+
+func ownerID(r *http.Request) string {
+	value := strings.TrimSpace(r.Header.Get("X-GraphShield-User"))
+	if value == "" {
+		return "usr_demo"
+	}
+	if len(value) > 80 {
+		return value[:80]
+	}
+	return value
 }

@@ -1,0 +1,101 @@
+openapi: 3.1.0
+info:
+  title: GraphShield Hosted Workspace API
+  version: 1.0.0
+  description: Authenticated, durable browser-facing API backed by D1 and R2.
+servers:
+  - url: /api/v1
+paths:
+  /workspace:
+    get:
+      summary: Return the authenticated user's latest project and recent runs
+      responses:
+        "200":
+          description: Current workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+    post:
+      summary: Bootstrap a workspace, submit a run, or cancel a run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  enum: [bootstrap, run, cancel]
+                projectId:
+                  type: string
+                runId:
+                  type: string
+                algorithm:
+                  enum: [WCC, PAGERANK, SHORTEST_PATH]
+                idempotencyKey:
+                  type: string
+                  maxLength: 128
+                configuration:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201": { description: Workspace created }
+        "202": { description: Run accepted or cancellation recorded }
+        "422": { $ref: "#/components/responses/Problem" }
+  /upload:
+    post:
+      summary: Validate, profile, and temporarily store a CSV source
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [projectId, file]
+              properties:
+                projectId: { type: string }
+                file: { type: string, contentMediaType: text/csv }
+      responses:
+        "201":
+          description: Profiled upload with a 24-hour retention deadline
+        "413": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+components:
+  schemas:
+    Workspace:
+      type: object
+      required: [mode, user, runs]
+      properties:
+        mode: { const: connected }
+        user:
+          type: object
+          required: [id, email, displayName, role]
+          properties:
+            id: { type: string }
+            email: { type: string, format: email }
+            displayName: { type: string }
+            role: { enum: [analyst, operator] }
+        project:
+          type: [object, "null"]
+        runs:
+          type: array
+          items: { type: object }
+    Problem:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string }
+        recovery: { type: string }
+  responses:
+    Problem:
+      description: RFC 9457-style problem response
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

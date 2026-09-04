@@ -1,5 +1,13 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1788530867768,
+      "tag": "0000_military_iron_fist",
+      "breakpoints": true
+    }
+  ]
 }

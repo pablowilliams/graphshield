@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev api up down test lint build seed
+.PHONY: bootstrap dev api worker up down test lint build seed
 
 bootstrap:
 	npm ci
@@ -8,6 +8,9 @@ dev:
 
 api:
 	go run ./services/api
+
+worker:
+	go run ./services/worker
 
 up:
 	docker compose up --build

@@ -16,18 +16,18 @@ The seeded reviewer path requires no account, services, or external data. Open t
 ## Architecture
 
 ```text
-React/Vinext web  ->  Go REST API  ->  cancellable worker boundary
-       |                   |                    |
-accessible graph/table   run metadata      deterministic graph package
+React/Vinext web -> authenticated Sites API -> D1 + R2
+       |                                         |
+       +-> Go REST API -> PostgreSQL queue -> worker -> Neo4j GDS
 ```
 
-The hosted demo performs the complete deterministic experience client-side so it stays instant and reliable. The Go service independently implements the versioned API, idempotent submission, run state machine, cancellation, retry, SSE event representation, result endpoints, CSV export, role-gated support endpoint, and real WCC/PageRank/shortest-path logic. The boundary is ready for Postgres and Neo4j GDS adapters; they are not falsely represented as live dependencies.
+The hosted release stores identity-aware projects, uploads, profiles, runs, stage events, results, and audit events in D1/R2 while retaining a clearly labeled resilient fallback. The container stack implements the production service boundary: a Go API writes a PostgreSQL queue, leased workers heartbeat and recover expired work, and the Neo4j adapter runs genuine GDS procedures with run-scoped projection cleanup. A deterministic executor keeps tests and offline demos repeatable.
 
-The canonical contract is [`packages/contracts/openapi.yaml`](packages/contracts/openapi.yaml). Key decisions live in [`docs/adr`](docs/adr).
+The canonical contract is [`packages/contracts/openapi.yaml`](packages/contracts/openapi.yaml). See the [architecture](docs/architecture.md), [case study](docs/product/case-study.md), [threat model](docs/security/threat-model.md), and [`docs/adr`](docs/adr).
 
 ## Quick start
 
-Requirements: Node 22+, Go 1.23+, and optionally Docker.
+Requirements: Node 22+, Go 1.25+, and optionally Docker.
 
 ```bash
 npm ci
@@ -72,22 +72,22 @@ All three algorithms have deterministic Go tests. The web demo shows planted pat
 
 ## Reliability and observability
 
-Runs advance through `QUEUED -> PROJECTING -> COMPUTING -> WRITING -> SUCCEEDED`, with cooperative `CANCELLING -> CANCELLED`. Every stage records an ordered event; retry creates a new run. JSON logs include run and stage correlation fields. The support view exposes checksums, configuration hash, worker attempt, cleanup state, sanitized logs, and an incident bundle. See the [failure runbook](docs/runbooks/analysis-failures.md).
+Runs advance through `QUEUED -> PROJECTING -> COMPUTING -> WRITING -> SUCCEEDED`, with cooperative `CANCELLING -> CANCELLED`. Workers claim PostgreSQL rows with `FOR UPDATE SKIP LOCKED`, renew leases by heartbeat, and make expired work recoverable. Every stage records an ordered event; retry creates a new run. JSON logs and Prometheus metrics expose correlation and health without raw rows. The support view exposes checksums, configuration hash, worker attempt, cleanup state, sanitized logs, and an incident bundle. See the [failure runbook](docs/runbooks/analysis-failures.md).
 
 ## Security and retention
 
-- Request bodies are strictly decoded and identifiers are server-generated.
+- Request bodies are bounded and strictly decoded; identifiers and object keys are server-generated.
 - Job creation requires an idempotency key.
 - Support search requires the operator role.
 - Exports neutralize spreadsheet-formula prefixes (`=`, `+`, `-`, `@`).
-- The browser demo accepts CSV metadata but does not transmit or persist raw rows.
-- Production uploads and exports should expire after 24 hours; seed data is wholly fictional.
+- Hosted CSVs are parsed server-side, stored in R2, profiled into D1, and assigned a 24-hour expiry.
+- HTTP security headers, per-client rate limits, prepared queries, and fixed GDS procedure templates reduce common abuse paths.
 - Logs contain identifiers/counts, never raw transaction rows.
 
 ## Testing
 
 ```bash
-go test -race ./...
+go test -race ./services/... ./datasets/...
 npm run build
 npm test
 npm run lint
@@ -97,11 +97,11 @@ CI runs the same checks. The result graph always has a full table alternative, f
 
 ## Deployment
 
-The web build targets Cloudflare-compatible ESM and can be published through Sites. The API image is a small non-root distroless container. `compose.yaml` is the local fallback; production should add managed persistence, a queue, object storage, rate limiting, and a Neo4j GDS adapter.
+The web build targets Cloudflare-compatible ESM and deploys with D1 and R2 bindings. The Go API and worker images are non-root distroless containers. `compose.yaml` starts the web, API, PostgreSQL, worker, and Neo4j GDS services as a complete local production-shaped stack.
 
 ## Known limitations and roadmap
 
-- Uploaded CSVs are validated in the portfolio UI but the hosted demo intentionally uses deterministic in-memory evidence.
-- Data persistence, multi-user authentication, Neo4j GDS, and live Snowflake access are adapter milestones, not claims in this release.
+- The hosted cloud worker persists workflow state and profiles uploads, but uses deterministic graph results for reviewer reliability.
+- Live Neo4j GDS execution is available in the container stack; it is not claimed for the hosted Cloudflare runtime.
 - The visualization is capped; the table is canonical for large result sets.
-- Next: durable Postgres repositories, queue-backed workers, live Neo4j GDS, and the documented Snowflake adapter boundary.
+- Next: deploy the Go worker stack behind the hosted API, add a production identity provider outside Sites, and complete the documented Snowflake adapter boundary.
