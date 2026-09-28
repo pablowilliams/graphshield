@@ -24,9 +24,14 @@ function StatusPill({ children, tone = "neutral" }: { children: React.ReactNode;
 function GraphCanvas({ selected, onSelect, compact = false }: { selected?: string; onSelect?: (id: string) => void; compact?: boolean }) {
   const displayNodes = compact ? nodes.slice(0, 8) : nodes;
   const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const [target, setTarget] = useState(selected || displayNodes[0]?.id || "");
+  useEffect(() => { if (selected) setTarget(selected); }, [selected]);
+  const targetNode = displayNodes.find(node => node.id === target) || displayNodes[0];
+  const targetConnections = targetNode ? edges.filter(edge => edge.source === targetNode.id || edge.target === targetNode.id).length : 0;
   return (
     <div className={`graph-canvas ${compact ? "compact" : ""}`} role="group" aria-label="Interactive network graph. Use the equivalent table to inspect every result.">
       <div className="graph-grid" />
+      <div className="graph-scan" aria-hidden="true" />
       <svg className="edges" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         {edges.filter(e => displayNodes.some(n => n.id === e.source) && displayNodes.some(n => n.id === e.target)).map((edge, i) => {
           const a = nodeById[edge.source], b = nodeById[edge.target];
@@ -35,10 +40,12 @@ function GraphCanvas({ selected, onSelect, compact = false }: { selected?: strin
       </svg>
       {displayNodes.map(node => (
         <button key={node.id} title={`${node.kind}: ${node.id}`} aria-label={`${node.kind} ${node.id}`} onClick={() => onSelect?.(node.id)}
-          className={`graph-node ${node.kind} ${selected === node.id ? "selected" : ""}`} style={{ left: `${node.x}%`, top: `${node.y}%` }}>
+          onPointerEnter={() => setTarget(node.id)} onFocus={() => setTarget(node.id)}
+          className={`graph-node ${node.kind} ${selected === node.id ? "selected" : ""} ${target === node.id ? "targeted" : ""}`} style={{ left: `${node.x}%`, top: `${node.y}%` }}>
           <span>{node.kind === "account" ? "A" : node.kind === "device" ? "D" : "IP"}</span><small>{node.id}</small>
         </button>
       ))}
+      {targetNode && <div className="target-readout" role="status" aria-live="polite"><span>FOCUS LOCK</span><strong>{targetNode.id}</strong><small>{targetNode.kind} · {targetConnections} links · {targetNode.risk || "unscored"} risk</small></div>}
       <div className="graph-tools"><button aria-label="Zoom in">+</button><button aria-label="Zoom out">−</button><button aria-label="Fit graph">⌗</button></div>
     </div>
   );

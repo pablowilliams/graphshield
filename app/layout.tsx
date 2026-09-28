@@ -14,9 +14,9 @@ export const metadata: Metadata = {
     title: "GraphShield",
     description: "A practical graph analysis workspace for fraud investigations.",
     type: "website",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "GraphShield graph investigation workspace" }],
+    images: [{ url: "/og-cyber-lab.png", width: 1200, height: 630, alt: "GraphShield graph investigation workspace" }],
   },
-  twitter: { card: "summary_large_image", title: "GraphShield", description: "A practical graph analysis workspace for fraud investigations.", images: ["/og.png"] },
+  twitter: { card: "summary_large_image", title: "GraphShield", description: "A practical graph analysis workspace for fraud investigations.", images: ["/og-cyber-lab.png"] },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
