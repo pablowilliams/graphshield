@@ -1,8 +1,26 @@
 # GraphShield
 
-GraphShield turns tabular fraud data into explainable graph investigations for analysts who do not know graph modeling. Its guided workflow profiles evidence, maps entities and relationships, previews a deterministic graph, runs three question-first analyses, and presents reviewable results without calling a score a verdict.
+**Explainable graph investigations for financial-crime analysts.**
+
+[![Live demo](https://img.shields.io/badge/live_demo-open-155EEF?style=flat-square)](https://pablowilliams.github.io/graphshield/)
+[![CI](https://img.shields.io/github/actions/workflow/status/pablowilliams/graphshield/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/pablowilliams/graphshield/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0B1220?style=flat-square)](LICENSE)
+
+[**Open the live investigation →**](https://pablowilliams.github.io/graphshield/)
+
+![GraphShield investigation workspace](public/og.png)
+
+GraphShield turns tabular fraud data into explainable graph investigations for analysts who do not know graph modelling. Its guided workflow profiles evidence, maps entities and relationships, previews a deterministic graph, runs three question-first analyses, and presents reviewable results without calling a score a verdict.
 
 The seeded reviewer path requires no account, services, or external data. Open the app, choose **Explore the seeded case**, and follow the dominant action on each screen.
+
+## Why it is portfolio-grade
+
+| Product depth | Engineering depth | Evidence discipline |
+|---|---|---|
+| Guided source-to-investigation workflow with accessible graph and table views | React/Vinext frontend, Go API and workers, PostgreSQL queue, Neo4j GDS, D1 and R2 | Deterministic fixtures, race-tested algorithms, explicit interpretation limits and an append-only audit trail |
+
+**Reviewer shortcuts:** [live demo](https://pablowilliams.github.io/graphshield/) · [case study](docs/product/case-study.md) · [architecture](docs/architecture.md) · [threat model](docs/security/threat-model.md) · [failure runbook](docs/runbooks/analysis-failures.md)
 
 ## Product workflow
 
@@ -105,3 +123,14 @@ The web build targets Cloudflare-compatible ESM and deploys with D1 and R2 bindi
 - Live Neo4j GDS execution is available in the container stack; it is not claimed for the hosted Cloudflare runtime.
 - The visualization is capped; the table is canonical for large result sets.
 - Next: deploy the Go worker stack behind the hosted API, add a production identity provider outside Sites, and complete the documented Snowflake adapter boundary.
+
+## Flagship portfolio
+
+GraphShield is one of three end-to-end systems in my data and risk engineering portfolio:
+
+- [SignalOps](https://github.com/pablowilliams/signalops) — data incident intelligence with leakage-safe anomaly detection and reproducible evaluation.
+- [Payment Risk Workbench](https://github.com/pablowilliams/payment-risk-workbench) — capacity-aware payment-risk investigation with human approval controls.
+
+## Licence
+
+MIT. Built by Pablo Williams as a portfolio project.
