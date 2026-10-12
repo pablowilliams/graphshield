@@ -25,7 +25,6 @@ function GraphCanvas({ selected, onSelect, compact = false }: { selected?: strin
   const displayNodes = compact ? nodes.slice(0, 8) : nodes;
   const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
   const [target, setTarget] = useState(selected || displayNodes[0]?.id || "");
-  useEffect(() => { if (selected) setTarget(selected); }, [selected]);
   const targetNode = displayNodes.find(node => node.id === target) || displayNodes[0];
   const targetConnections = targetNode ? edges.filter(edge => edge.source === targetNode.id || edge.target === targetNode.id).length : 0;
   return (
